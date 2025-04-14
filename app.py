@@ -92,7 +92,7 @@ def create_folio(risk_limit=0.1, year_from = "2023", to_print=["weights", "cagr"
 
 
 # Define the folder path and output file
-folder_path = '/Users/sandeep/DOCS/Assignments/761/FOF/Index Fund Time series'  # Update this to the folder containing your CSV files
+folder_path = './Index Fund Time series'  # Update this to the folder containing your CSV files
 output_file = 'collated_prices.csv'  # Output CSV file name
 
 # Initialize an empty DataFrame to hold the collated data
