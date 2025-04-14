@@ -1,13 +1,15 @@
 import os
 import pandas as pd
-import ast
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-from flask import Flask, jsonify, request
 
+from flask import Flask, request, jsonify
+import ast
 
 app = Flask(__name__)
+
 # Function to calculate CAGR
 def calculate_cagr(price_series):
     start_value = price_series[0]
@@ -66,29 +68,6 @@ def optimize_portfolio(cov_matrix, risk_limit, n_assets):
 def optimized_portfolio_time_series(asset_prices, weights):
     return (weights*asset_prices).sum(axis=1).to_frame("Portfolio Price")
 
-def create_folio(risk_limit=0.1, year_from = "2023", to_print=["weights", "cagr", "max_drawdown", "sharpe_ratio", "portfolio_variance"]):
-    #asset_prices = assets.loc[year_from:]
-    asset_prices = asset_prices_100
-    cov_matrix = calculate_cov_matrix_from_timeseries(asset_prices)
-    print(f"Risk Limit = {risk_limit}")
-    # Optimize portfolio weights
-    optimal_weights = optimize_portfolio(cov_matrix, risk_limit, asset_prices.shape[1])
-    if "weights" in to_print:
-        print("Optimal Weights:", optimal_weights)
-
-    folio_time_series = optimized_portfolio_time_series(asset_prices, optimal_weights).values
-
-    if "cagr" in to_print:
-        print(f"CAGR = {calculate_cagr(folio_time_series)}")
-    if "max_drawdown" in to_print:
-        print(f"Max drawdown = {calculate_max_drawdown(folio_time_series)}")
-    if "sharpe_ratio" in to_print:
-        print(f"Sharpe Ratio = {calculate_sharpe_ratio(folio_time_series)}")
-    if "portfolio_variance" in to_print:
-        print(f"Portfolio Stdev = {np.sqrt(portfolio_variance(optimal_weights, calculate_cov_matrix_from_timeseries(asset_prices)))}")
-    print("--------------------------------------------------------")
-    
-
 
 
 # Define the folder path and output file
@@ -122,7 +101,62 @@ for file_name in os.listdir(folder_path):
 # Save the collated DataFrame to a new CSV file
 collated_df.to_csv(output_file, index=False)
 
-def results(assests_selected, risk_limit=0.15):
+
+# Normalize prices
+def inverse_volatility_weights(asset_prices, time_period, risk_limit):
+    """
+    Calculate inverse volatility weights using the latest time_period (in years),
+    and scale them to respect the given risk_limit (annualized standard deviation).
+
+    Parameters:
+    - asset_prices: pd.DataFrame of asset prices
+    - time_period: float, number of most recent years to consider for volatility
+    - risk_limit: float, maximum allowable annualized volatility
+
+    Returns:
+    - np.ndarray of scaled inverse volatility weights
+    """
+    trading_days = int(252 * time_period)
+    recent_prices = asset_prices.tail(trading_days)
+    
+    # Calculate daily returns
+    daily_returns = recent_prices.pct_change().dropna()
+    
+    # Daily volatility per asset
+    daily_vol = daily_returns.std()
+    
+    # Annualized volatility
+    annual_vol = daily_vol * np.sqrt(252)
+    
+    # Inverse volatility weights
+    inv_vol = 1 / (annual_vol + 1e-8)
+    raw_weights = inv_vol / inv_vol.sum()
+    
+    # Compute portfolio variance and volatility
+    cov_matrix = daily_returns.cov() * 252  # Annualized covariance matrix
+    portfolio_vol = np.sqrt(raw_weights.T @ cov_matrix @ raw_weights)
+    
+    # If portfolio volatility exceeds risk limit, scale weights down
+    if portfolio_vol > risk_limit:
+        scale = risk_limit / portfolio_vol
+        scaled_weights = raw_weights * scale
+        scaled_weights /= scaled_weights.sum()  # Renormalize to sum to 1
+    else:
+        scaled_weights = raw_weights
+    
+    return scaled_weights.values
+
+
+def optimized_portfolio_time_series(asset_prices, weights):
+    return (weights*asset_prices).sum(axis=1).to_frame("Portfolio Price")
+
+
+def compute_portfolio_series(asset_prices, weights):
+    """Calculates the portfolio price series from asset prices and weights."""
+    return (asset_prices * weights).sum(axis=1)
+
+
+def results(assests_selected, risk_limit=0.15,time=1):
     assets = pd.read_csv('collated_prices.csv', index_col='Date', parse_dates=True,
                             dtype=float, thousands=",", header=0)
 
@@ -131,20 +165,44 @@ def results(assests_selected, risk_limit=0.15):
     asset_prices = assets2[assests_selected]
     asset_prices.bfill(inplace=True)
 
-    asset_prices_100 = asset_prices/asset_prices.iloc[0]*100
-
-    asset_prices = asset_prices_100
+    
     cov_matrix = calculate_cov_matrix_from_timeseries(asset_prices)
     print(f"Risk Limit = {risk_limit}")
     # Optimize portfolio weights
-    optimal_weights = optimize_portfolio(cov_matrix, risk_limit, asset_prices.shape[1])
-    folio_time_series = optimized_portfolio_time_series(asset_prices, optimal_weights).values
+    # optimal_weights = optimize_portfolio(cov_matrix, risk_limit, asset_prices.shape[1])
+    optimal_weights = inverse_volatility_weights(asset_prices, time, risk_limit)
+
+    x = compute_portfolio_series(asset_prices, optimal_weights)
+
+    # print(f"CAGR = {calculate_cagr(x)}")
+    # print(f"Max drawdown = {calculate_max_drawdown(x)}")
+
+    portfolio_returns = x.pct_change().dropna()
+
+    # print(f"Sharpe Ratio = {calculate_sharpe_ratio(portfolio_returns)}")
+
+    trading_days = int(252 * time)
+    recent_prices = asset_prices.tail(trading_days)
+
+    daily_returns = recent_prices.pct_change().dropna()
+
+    recent_cov_matrix = daily_returns.cov()
+
+    portfolio_daily_volatility = np.sqrt(portfolio_variance(optimal_weights, recent_cov_matrix))
+
+    portfolio_annual_volatility = portfolio_daily_volatility * np.sqrt(252)
+
+    # print(f"Portfolio Stdev (Annualized) = {portfolio_annual_volatility}")
+
+
+    # folio_time_series = optimized_portfolio_time_series(asset_prices, optimal_weights).values
     results = {}
     results["weights"] = optimal_weights
-    results["cagr"] = calculate_cagr(folio_time_series)
-    results["max_drawdown"] = calculate_max_drawdown(folio_time_series)
-    results["sharpe_ratio"] = calculate_sharpe_ratio(folio_time_series)
-    results["portfolio_variance"] = np.sqrt(portfolio_variance(optimal_weights, calculate_cov_matrix_from_timeseries(asset_prices)))
+    results["cagr"] = calculate_cagr(x)
+    results["max_drawdown"] = calculate_max_drawdown(x)
+    results["sharpe_ratio"] = calculate_sharpe_ratio(x)
+    results["portfolio_variance"] = portfolio_annual_volatility
+    
     return results
 
 @app.route('/get_results', methods=['POST'])
@@ -155,11 +213,12 @@ def get_results():
         data_raw = request.form.get('assets', '[]')
         assets_selected = ast.literal_eval(data_raw)
         risk_limit = float(request.form.get('risk_limit', 0.15))
+        time = int(request.form.get('time', 1))
         print(f"Assets selected: {assets_selected}")
         print(f"Risk limit: {risk_limit}")
 
         # Call your results function
-        raw_results = results(assets_selected, risk_limit)
+        raw_results = results(assets_selected, risk_limit,time)
 
         # Convert any NumPy arrays or floats to Python-native types
         results_data = {
@@ -178,4 +237,4 @@ def get_results():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True,port=6000)
